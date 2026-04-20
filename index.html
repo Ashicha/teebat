@@ -1167,7 +1167,7 @@
           </div>
           <button
             class="btn btn-accent btn-full"
-            onclick="generateNextRound()"
+            onclick="generateSchedule()"
             style="margin-bottom: 14px"
             id="next-round-btn"
           >
@@ -1183,7 +1183,7 @@
             >
               <polygon points="5 3 19 12 5 21 5 3" />
             </svg>
-            Generate Next Round
+            Generate <span id="gen-rounds-label">5</span> Rounds
           </button>
           <div
             id="sitting-out-section"
@@ -1194,7 +1194,9 @@
           <div id="matches-empty" class="empty" style="display: none">
             <div class="empty-icon">🎯</div>
             <div class="empty-title">No active matches</div>
-            <div class="empty-sub">Check in players and generate a round</div>
+            <div class="empty-sub">
+              Check in players and generate a schedule
+            </div>
           </div>
         </div>
       </div>
@@ -1356,6 +1358,7 @@
         gameType: "2v2",
         targetRounds: 5,
         satOutLastRound: [],
+        roundData: {},
       };
 
       const AVATAR_COLORS = [
@@ -1502,10 +1505,10 @@
         document.getElementById("active-match-count").textContent = activeCount;
         document.getElementById("checkin-count").textContent =
           state.checkedIn.length;
-        document.getElementById("matches-subtitle").textContent =
-          state.roundNum > 0
-            ? "Round " + state.roundNum
-            : "Check in today's players";
+        const hasSchedule = state.matches.some((m) => m.round);
+        document.getElementById("matches-subtitle").textContent = hasSchedule
+          ? "Round " + state.roundNum + " / " + state.targetRounds
+          : "Check in today's players";
 
         // Check-in list
         const checkinList = document.getElementById("checkin-list");
@@ -1549,51 +1552,15 @@
         document.getElementById("round-progress").textContent =
           "Round " + state.roundNum + " / " + state.targetRounds;
 
-        // Sitting out info
-        const activeMs = state.matches.filter((m) => m.status === "active");
-        const inMatchIds = new Set();
-        activeMs.forEach((m) => {
-          m.teamA.forEach((id) => inMatchIds.add(id));
-          m.teamB.forEach((id) => inMatchIds.add(id));
-        });
-        const sittingOut = state.checkedIn
-          .map((id) => state.players.find((p) => p.id === id))
-          .filter((p) => p && !inMatchIds.has(p.id));
-        const sitEl = document.getElementById("sitting-out-section");
-        if (activeMs.length > 0 && sittingOut.length > 0) {
-          sitEl.style.display = "block";
-          sitEl.innerHTML =
-            '<div class="section-label">Sitting Out (' +
-            sittingOut.length +
-            ")</div>" +
-            sittingOut
-              .map(
-                (p) =>
-                  '<div class="sitting-out-card">' +
-                  avatarHTML(p, "sm") +
-                  '<span style="font-size:13px;">' +
-                  p.name +
-                  "</span>" +
-                  '<span style="margin-left:auto;font-size:12px;color:var(--text3);">⏳ ' +
-                  (p.waitCount || 0) +
-                  "</span></div>",
-              )
-              .join("");
-        } else {
-          sitEl.style.display = "none";
-        }
+        // Sitting out section is now per-round — hide the global one
+        document.getElementById("sitting-out-section").style.display = "none";
 
-        // Next round button state
+        // Schedule button state
+        const activeMs = state.matches.filter((m) => m.status === "active");
         const nrBtn = document.getElementById("next-round-btn");
+        document.getElementById("gen-rounds-label").textContent =
+          state.targetRounds;
         if (activeMs.length > 0) {
-          nrBtn.disabled = true;
-          nrBtn.style.opacity = "0.4";
-          nrBtn.style.pointerEvents = "none";
-          nrBtn.querySelector("span")?.remove();
-        } else if (
-          state.roundNum >= state.targetRounds &&
-          state.targetRounds > 0
-        ) {
           nrBtn.disabled = true;
           nrBtn.style.opacity = "0.4";
           nrBtn.style.pointerEvents = "none";
@@ -1603,16 +1570,43 @@
           nrBtn.style.pointerEvents = "all";
         }
 
-        // Active matches
+        // Schedule display — grouped by round
         const activeList = document.getElementById("active-matches-list");
         const activeEmpty = document.getElementById("matches-empty");
-        const active = state.matches.filter((m) => m.status === "active");
-        if (active.length === 0) {
+        const scheduled = state.matches.filter((m) => m.round);
+        if (scheduled.length === 0) {
           activeList.innerHTML = "";
           activeEmpty.style.display = "block";
         } else {
           activeEmpty.style.display = "none";
-          activeList.innerHTML = active.map((m) => matchCardHTML(m)).join("");
+          const rounds = {};
+          scheduled.forEach((m) => {
+            if (!rounds[m.round]) rounds[m.round] = [];
+            rounds[m.round].push(m);
+          });
+          let html = "";
+          Object.keys(rounds)
+            .sort((a, b) => +a - +b)
+            .forEach((rn) => {
+              const rMs = rounds[rn];
+              const allDone = rMs.every((m) => m.status === "done");
+              const isActive = rMs.some((m) => m.status === "active");
+              const labelColor = allDone
+                ? "var(--text3)"
+                : isActive
+                  ? "var(--accent)"
+                  : "var(--text2)";
+              const sitIds = state.roundData?.[rn]?.sittingOut || [];
+              const sitNames = sitIds
+                .map((id) => state.players.find((p) => p.id === id)?.name)
+                .filter(Boolean);
+              html += `<div style="margin-bottom:20px;">
+              <div class="section-label" style="color:${labelColor};margin-bottom:8px;">Round ${rn}${allDone ? " ✓" : isActive ? " · Playing" : " · Upcoming"}</div>
+              ${rMs.map((m) => matchCardHTML(m)).join("")}
+              ${sitNames.length > 0 ? `<div style="font-size:13px;color:var(--text2);padding:4px 2px 0 2px;">Sitting out: ${sitNames.join(", ")}</div>` : ""}
+            </div>`;
+            });
+          activeList.innerHTML = html;
         }
       }
 
@@ -1630,11 +1624,12 @@
         const pA = state.players.find((p) => p.id === m.teamA[0]);
         const pB = state.players.find((p) => p.id === m.teamB[0]);
         const isDone = m.status === "done";
+        const isPending = m.status === "pending";
         return `
     <div class="match-card">
       <div class="match-header">
         <span style="font-size:12px;font-weight:600;color:var(--text3);letter-spacing:0.05em;">COURT ${m.court} · 1v1</span>
-        <span class="badge ${isDone ? "badge-gray" : "badge-green"}">${isDone ? "Finished" : "Playing"}</span>
+        <span class="badge ${isDone ? "badge-gray" : isPending ? "badge-blue" : "badge-green"}">${isDone ? "Finished" : isPending ? "Upcoming" : "Playing"}</span>
       </div>
       <div class="match-body">
         <div class="team-vs" style="grid-template-columns:1fr 60px 1fr;">
@@ -1643,7 +1638,10 @@
             <span style="font-size:14px;margin-top:4px;">${pA?.name || "?"}</span>
           </div>
           <div class="score-center">
-            <div class="score-display">${m.score[0]}<span style="color:var(--text3);font-size:20px;">–</span>${m.score[1]}</div>
+            ${
+              isPending
+                ? '<div class="score-vs" style="font-size:20px;font-weight:600;padding:8px 0;">VS</div>'
+                : `<div class="score-display">${m.score[0]}<span style="color:var(--text3);font-size:20px;">–</span>${m.score[1]}</div>
             ${
               !isDone
                 ? `<div class="score-btns">
@@ -1651,6 +1649,7 @@
               <button class="btn btn-ghost btn-sm" onclick="addScore(${m.id},1)">+B</button>
             </div>`
                 : ""
+            }`
             }
           </div>
           <div class="team-col" style="align-items:center;">
@@ -1660,14 +1659,16 @@
         </div>
       </div>
       ${
-        !isDone
+        !isDone && !isPending
           ? `<div class="match-footer">
         <button class="btn btn-accent btn-sm" onclick="finishMatch(${m.id})" style="flex:1;">Mark Finished</button>
         <button class="btn btn-danger btn-sm" onclick="removeMatch(${m.id})">Remove</button>
       </div>`
-          : `<div class="match-footer">
+          : isDone
+            ? `<div class="match-footer">
         <button class="btn btn-ghost btn-sm" onclick="removeMatch(${m.id})" style="flex:1;">Remove</button>
       </div>`
+            : ""
       }
     </div>`;
       }
@@ -1680,11 +1681,12 @@
         const pB1 = state.players.find((p) => p.id === m.teamB[0]);
         const pB2 = state.players.find((p) => p.id === m.teamB[1]);
         const isDone = m.status === "done";
+        const isPending = m.status === "pending";
         return `
     <div class="match-card">
       <div class="match-header">
         <span style="font-size:12px;font-weight:600;color:var(--text3);letter-spacing:0.05em;">COURT ${m.court} · 2v2</span>
-        <span class="badge ${isDone ? "badge-gray" : "badge-green"}">${isDone ? "Finished" : "Playing"}</span>
+        <span class="badge ${isDone ? "badge-gray" : isPending ? "badge-blue" : "badge-green"}">${isDone ? "Finished" : isPending ? "Upcoming" : "Playing"}</span>
       </div>
       <div class="match-body">
         <div class="team-vs">
@@ -1693,7 +1695,10 @@
             <div class="team-player-row">${avatarHTML(pA2, "sm")}<span style="font-size:14px;">${pA2?.name || "?"}</span></div>
           </div>
           <div class="score-center">
-            <div class="score-display">${m.score[0]}<span style="color:var(--text3);font-size:20px;">–</span>${m.score[1]}</div>
+            ${
+              isPending
+                ? '<div class="score-vs" style="font-size:20px;font-weight:600;padding:12px 0;">VS</div>'
+                : `<div class="score-display">${m.score[0]}<span style="color:var(--text3);font-size:20px;">–</span>${m.score[1]}</div>
             ${
               !isDone
                 ? `<div class="score-btns">
@@ -1701,6 +1706,7 @@
               <button class="btn btn-ghost btn-sm" onclick="addScore(${m.id},1)">+B</button>
             </div>`
                 : ""
+            }`
             }
           </div>
           <div class="team-col right">
@@ -1710,14 +1716,16 @@
         </div>
       </div>
       ${
-        !isDone
+        !isDone && !isPending
           ? `<div class="match-footer">
         <button class="btn btn-accent btn-sm" onclick="finishMatch(${m.id})" style="flex:1;">Mark Finished</button>
         <button class="btn btn-danger btn-sm" onclick="removeMatch(${m.id})">Remove</button>
       </div>`
-          : `<div class="match-footer">
+          : isDone
+            ? `<div class="match-footer">
         <button class="btn btn-ghost btn-sm" onclick="removeMatch(${m.id})" style="flex:1;">Remove</button>
       </div>`
+            : ""
       }
     </div>`;
       }
@@ -2129,6 +2137,7 @@
           if (p) {
             p.wins++;
             p.inMatch = false;
+            p.matchesPlayed++;
           }
         });
         loserTeam.forEach((pid) => {
@@ -2136,11 +2145,34 @@
           if (p) {
             p.losses++;
             p.inMatch = false;
+            p.matchesPlayed++;
           }
         });
+        // Auto-activate next round when all matches in current round are done
+        const roundMs = state.matches.filter((x) => x.round === m.round);
+        let toastMsg = "Match finished!";
+        if (roundMs.every((x) => x.status === "done")) {
+          const nextRound = m.round + 1;
+          const nextRoundMs = state.matches.filter(
+            (x) => x.round === nextRound && x.status === "pending",
+          );
+          if (nextRoundMs.length > 0) {
+            nextRoundMs.forEach((nm) => {
+              nm.status = "active";
+              [...nm.teamA, ...nm.teamB].forEach((pid) => {
+                const p = state.players.find((x) => x.id === pid);
+                if (p) p.inMatch = true;
+              });
+            });
+            state.roundNum = nextRound;
+            toastMsg = "Round " + nextRound + " started!";
+          } else if (state.matches.some((x) => x.round)) {
+            toastMsg = "All rounds complete! 🎉";
+          }
+        }
         saveState();
         render();
-        showToast("Match finished!");
+        showToast(toastMsg);
       }
 
       function removeMatch(id) {
@@ -2149,10 +2181,7 @@
         if (m.status === "active") {
           [...m.teamA, ...m.teamB].forEach((pid) => {
             const p = state.players.find((x) => x.id === pid);
-            if (p) {
-              p.inMatch = false;
-              p.matchesPlayed = Math.max(0, p.matchesPlayed - 1);
-            }
+            if (p) p.inMatch = false;
           });
         }
         state.matches = state.matches.filter((x) => x.id !== id);
@@ -2217,113 +2246,91 @@
         renderMatches();
       }
 
-      function generateNextRound() {
-        if (state.matches.some((m) => m.status === "active")) {
-          showToast("Finish active matches first");
-          return;
-        }
-        if (state.roundNum >= state.targetRounds) {
-          showToast("All " + state.targetRounds + " rounds completed!");
-          return;
-        }
+      function generateSchedule() {
         const ppc = state.gameType === "1v1" ? 2 : 4;
         const checkedInPlayers = state.checkedIn
           .map((id) => state.players.find((p) => p.id === id))
-          .filter((p) => p && !p.inMatch);
+          .filter((p) => p);
         if (checkedInPlayers.length < ppc) {
           showToast("Check in at least " + ppc + " players");
           return;
         }
-        const slotsNeeded = state.courts * ppc;
-        const totalAvailable = checkedInPlayers.length;
-
-        // Sticky rotation: players who sat out last round MUST play
-        const mustPlayIds = new Set(state.satOutLastRound || []);
-        const mustPlay = checkedInPlayers.filter((p) => mustPlayIds.has(p.id));
-        const rest = checkedInPlayers.filter((p) => !mustPlayIds.has(p.id));
-
-        // Shuffle the rest randomly
-        const shuffledRest = [...rest].sort(() => Math.random() - 0.5);
-
-        // Fill slots: must-play first, then random from rest
-        let picked = [...mustPlay];
-        for (const p of shuffledRest) {
-          if (picked.length >= slotsNeeded) break;
-          picked.push(p);
-        }
-
-        // Must be multiple of ppc
-        const courtsToFill = Math.floor(picked.length / ppc);
-        if (courtsToFill === 0) {
-          showToast("Not enough checked-in players");
-          return;
-        }
-        picked = picked.slice(0, courtsToFill * ppc);
-
-        // Players sitting out this round
-        const pickedIds = new Set(picked.map((p) => p.id));
-        const sittingOut = checkedInPlayers.filter((p) => !pickedIds.has(p.id));
-
-        // Update waitCount
-        sittingOut.forEach((p) => {
-          p.waitCount = (p.waitCount || 0) + 1;
-        });
-        picked.forEach((p) => {
+        // Reset all match state
+        state.matches = [];
+        state.roundNum = 0;
+        state.roundData = {};
+        state.players.forEach((p) => {
+          p.inMatch = false;
           p.waitCount = 0;
         });
 
-        // Save who sat out for next round's sticky rule
-        state.satOutLastRound = sittingOut.map((p) => p.id);
+        const slotsPerRound = state.courts * ppc;
+        let satOutPrev = [];
 
-        state.roundNum++;
-        for (let c = 0; c < courtsToFill; c++) {
-          const courtPlayers = picked.slice(c * ppc, c * ppc + ppc);
-          let teamA, teamB;
-          if (state.gameType === "1v1") {
-            teamA = [courtPlayers[0].id];
-            teamB = [courtPlayers[1].id];
-          } else {
-            const [tA, tB] = balanceTeams(courtPlayers);
-            teamA = tA.map((p) => p.id);
-            teamB = tB.map((p) => p.id);
+        for (let r = 0; r < state.targetRounds; r++) {
+          // Players who sat out last round MUST play this round
+          const mustPlayIds = new Set(satOutPrev);
+          const mustPlay = checkedInPlayers.filter((p) =>
+            mustPlayIds.has(p.id),
+          );
+          const rest = checkedInPlayers.filter((p) => !mustPlayIds.has(p.id));
+          // Randomly rotate the rest
+          const shuffledRest = [...rest].sort(() => Math.random() - 0.5);
+
+          let picked = [...mustPlay];
+          for (const p of shuffledRest) {
+            if (picked.length >= slotsPerRound) break;
+            picked.push(p);
           }
-          state.matches.push({
-            id: state.nextMatchId++,
-            court: c + 1,
-            teamA,
-            teamB,
-            score: [0, 0],
-            status: "active",
-            round: state.roundNum,
-            gameType: state.gameType,
-          });
-          courtPlayers.forEach((p) => {
-            p.inMatch = true;
-            p.matchesPlayed++;
-          });
+          const courtsToFill = Math.floor(picked.length / ppc);
+          if (courtsToFill === 0) break;
+          picked = picked.slice(0, courtsToFill * ppc);
+
+          const pickedIds = new Set(picked.map((p) => p.id));
+          const sittingOutIds = checkedInPlayers
+            .filter((p) => !pickedIds.has(p.id))
+            .map((p) => p.id);
+          satOutPrev = sittingOutIds;
+
+          const roundNum = r + 1;
+          state.roundData[roundNum] = { sittingOut: sittingOutIds };
+
+          for (let c = 0; c < courtsToFill; c++) {
+            const courtPlayers = picked.slice(c * ppc, c * ppc + ppc);
+            let teamA, teamB;
+            if (state.gameType === "1v1") {
+              teamA = [courtPlayers[0].id];
+              teamB = [courtPlayers[1].id];
+            } else {
+              const [tA, tB] = balanceTeams(courtPlayers);
+              teamA = tA.map((p) => p.id);
+              teamB = tB.map((p) => p.id);
+            }
+            state.matches.push({
+              id: state.nextMatchId++,
+              court: c + 1,
+              teamA,
+              teamB,
+              score: [0, 0],
+              status: r === 0 ? "active" : "pending",
+              round: roundNum,
+              gameType: state.gameType,
+            });
+          }
+          // Mark round 1 players as inMatch
+          if (r === 0) {
+            picked.forEach((p) => {
+              p.inMatch = true;
+            });
+          }
         }
+        state.roundNum = 1;
+        state.satOutLastRound = satOutPrev;
         state.selectedPlayers = [];
         saveState();
         render();
         switchMatchTab("active");
-        const sitMsg =
-          sittingOut.length > 0
-            ? " · " + sittingOut.length + " sitting out"
-            : "";
-        showToast(
-          "Round " +
-            state.roundNum +
-            "/" +
-            state.targetRounds +
-            ": " +
-            courtsToFill +
-            " match" +
-            (courtsToFill > 1 ? "es" : "") +
-            " (" +
-            state.gameType +
-            ")" +
-            sitMsg,
-        );
+        showToast(state.targetRounds + " rounds scheduled!");
       }
 
       function balanceTeams(players) {
@@ -2421,6 +2428,8 @@
             if (state.targetRounds === undefined) state.targetRounds = 5;
             if (!Array.isArray(state.satOutLastRound))
               state.satOutLastRound = [];
+            if (!state.roundData || typeof state.roundData !== "object")
+              state.roundData = {};
           }
         } catch (e) {}
       }
